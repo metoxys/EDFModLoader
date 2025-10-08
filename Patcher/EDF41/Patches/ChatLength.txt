@@ -5,4 +5,5 @@ aob ChatWindowWidth BB????????3BCB0F4FD9
 ChatWindowWidth+8: 4C        ; CMOVG (0F 4F) -> CMOVL (0F 4C)
 
 ChatLimit+4: s32! 32         ; chat character limit (default 32, I recommend 90 at 1080p)
-ChatWindowWidth+1: s32! 400  ; textbox width (default 400, I recommend 1080 at 1080p)
+
+ChatWindowWidth+1: s32! 400  ; textbox width (default 400, I recommend 1200 at 1080p)
