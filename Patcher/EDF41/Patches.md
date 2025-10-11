@@ -1,6 +1,9 @@
 ## Default Patches
 These patches are included and active by default.  
 
+### IncreaseChatLimit (by metoxys)
+IncreaseChatLimit increases the chat character limit from 32 to 90 characters.  
+
 ### RemoveChatCensor (by BlueAmulet, based on Souzooka's patch)
 RemoveChatCensor removes chat censorship on your messages, and the messages that other players post.  
 Other players will still see your message as censored unless they also have this patch.  

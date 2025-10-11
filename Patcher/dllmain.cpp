@@ -77,7 +77,8 @@ enum struct PatchType {
 	kInteger,
 	kFloat,
 	kDouble,
-	kRelative
+	kRelative,
+	kAbsolute
 };
 
 // Injects patches into game process
@@ -534,6 +535,10 @@ bool MemoryPatcher::Apply(std::wstring filename) {
 							pType = PatchType::kRelative;
 							iLength = 8;
 							needValue = true;
+						} else if (patchType == "abs64") {
+							pType = PatchType::kAbsolute;
+							iLength = 8;
+							needValue = true;
 						} else if (patchType.length() >= 2 && (patchType[0] == 's' || patchType[0] == 'u' || patchType[0] == 'n' || patchType[0] == 'p')) {
 							pType = PatchType::kInteger;
 							needValue = true;
@@ -618,20 +623,23 @@ bool MemoryPatcher::Apply(std::wstring filename) {
 										memcpy(bytes, &value, iLength);
 									}
 								}
-							} else if (pType == PatchType::kRelative) {
+							} else if (pType == PatchType::kRelative || pType == PatchType::kAbsolute) {
 								uintptr_t targetAddr;
 								if (ParseAddress(patchValue, targetAddr)) {
-									ptrdiff_t offset = targetAddr - lastOffset - iLength;
+									ptrdiff_t value = targetAddr;
+									if (pType == PatchType::kRelative) {
+										value -= lastOffset + iLength;
+									}
 									if (iLength == 4) {
 										// Verify relative address fits within 32bits
-										if (offset > INT32_MAX || offset < INT32_MIN) {
+										if (value > INT32_MAX || value < INT32_MIN) {
 											ltprintf("Relative offset too large: %I64x - %I64x", targetAddr, lastOffset);
 											patch = false;
 										}
 									}
 									if (patch) {
 										bytes = new unsigned char[iLength];
-										memcpy(bytes, &offset, iLength);
+										memcpy(bytes, &value, iLength);
 									}
 								}
 							}
@@ -704,7 +712,7 @@ bool MemoryPatcher::Apply(std::wstring filename) {
 
 void EMLCommon_Load(bool EDF6) {
 	hLogFile = fopen("Patcher.log", "wb");
-	ltputs("EDF Patcher v1.1.1");
+	ltputs("EDF Patcher v1.1.2");
 
 	HMODULE hModule;
 	if (EDF6) {

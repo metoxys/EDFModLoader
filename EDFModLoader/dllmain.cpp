@@ -90,7 +90,7 @@ BOOLEAN EDFMLAPI RemoveHookWrap(void *Original) {
 	if (Original != NULL) {
 		std::vector<void*>::iterator position = std::find(hooks.begin(), hooks.end(), Original);
 		if (position != hooks.end()) {
-			if (MH_DisableHook(Original)) {
+			if (MH_DisableHook(Original) == MH_OK) {
 				hooks.erase(position);
 				return true;
 			}
@@ -100,7 +100,7 @@ BOOLEAN EDFMLAPI RemoveHookWrap(void *Original) {
 }
 
 static void RemoveAllHooks(void) {
-	if (MH_DisableHook(MH_ALL_HOOKS))
+	if (MH_DisableHook(MH_ALL_HOOKS) == MH_OK)
 	{
 		hooks.clear();
 	}
@@ -123,15 +123,6 @@ typedef struct {
 	uintptr_t wstrassign;
 	uintptr_t gamelog;
 } FuncOffsets;
-
-typedef struct {
-	uintptr_t offset;
-	const wchar_t *search;
-	const char *ident;
-	const char *plugfunc;
-	FuncOffsets pointers;
-	int version;
-} PointerSet;
 
 static const char *plugFunc;
 
@@ -346,32 +337,46 @@ static const char ModLoaderStr[] = "ModLoader";
 PBYTE hmodEXE;
 char hmodName[MAX_PATH];
 
-PointerSet psets[] = {
-	{0xaa36d0, L"EarthDefenceForce 4.1 for Windows", "EDF41", "EML4_Load", {0x667102, 0x8ed80, 0x91580, 0x91790}, 41}, // EDF 4.1
-	{0xebcbd0, L"EarthDefenceForce 5 for PC", "EDF5", "EML5_Load", {0x9c835a, 0x244d0, 0x27380, 0x27680}, 5},          // EDF 5
-};
-
-static uintptr_t ScanPtr(LightningScanner::ScanResult result) {
+static uintptr_t ScanPtr(const char *pattern, const char *name, size_t ScanRange) {
+	LightningScanner::Scanner scanner{LightningScanner::Pattern(pattern)};
+	LightningScanner::ScanResult result = scanner.Find(hmodEXE, ScanRange);
 	void *addr = result.Get<void>();
 	if (addr != NULL) {
 		// Return the result as an offset to the executable
-		return (uintptr_t)addr - (uintptr_t)hmodEXE;
+		return (uintptr_t)addr;
 	} else {
+		PLOG_ERROR << "Failed to locate " << name << " function";
 		return NULL;
 	}
 }
 
-void SetupHook(uintptr_t offset, void **func, void* hook, const char *reason, BOOL active) {
-	if (!offset) {
-		PLOG_INFO << "Skipping unsupported " << hmodName << " hook (" << reason << ")";
-	} else if (!active) {
-		PLOG_INFO << "Skipping " << hmodName << "+" << std::hex << offset << " hook (" << reason << ")";
-	} else {
-		PLOG_INFO << "Hooking " << hmodName << "+" << std::hex << offset << " (" << reason << ")";
-		*func = hmodEXE + offset;
-		if (!SetHookWrap(hook, func)) {
-			PLOG_ERROR << "Failed to setup " << hmodName << "+" << std::hex << offset << " hook";
-		}
+void SetupHook(uintptr_t address, void **func, void *hook, const char *reason, BOOL active) {
+	if (!address) {
+		PLOG_ERROR << "Skipping missing hook (" << reason << ")";
+		return;
+	}
+
+	// Get the module that contains this address
+	HMODULE hmod = nullptr;
+	if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, (LPCSTR)address, &hmod)) {
+		PLOG_ERROR << "Failed to get module for address " << std::hex << address << " (" << reason << ")";
+		return;
+	}
+
+	// Get the module's base name
+	char moduleName[MAX_PATH] = {0};
+	GetModuleBaseNameA(GetCurrentProcess(), hmod, moduleName, sizeof(moduleName));
+	uintptr_t offset = address - (uintptr_t)hmod;
+
+	if (!active) {
+		PLOG_INFO << "Skipping " << moduleName << "+" << std::hex << offset << " hook (" << reason << ")";
+		return;
+	}
+
+	PLOG_INFO << "Hooking " << moduleName << "+" << std::hex << offset << " (" << reason << ")";
+	*func = (void*)address;
+	if (!SetHookWrap(hook, func)) {
+		PLOG_ERROR << "Failed to setup " << moduleName << "+" << std::hex << offset << " hook";
 	}
 }
 
@@ -412,7 +417,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 		PluginInfo *selfInfo = new PluginInfo;
 		selfInfo->infoVersion = PluginInfo::MaxInfoVer;
 		selfInfo->name = "EDFModLoader";
-		selfInfo->version = PLUG_VER(1, 0, 9, 1);
+		selfInfo->version = PLUG_VER(1, 0, 10, 0);
 		PluginData *selfData = new PluginData;
 		selfData->info = selfInfo;
 		selfData->module = hModule;
@@ -451,20 +456,46 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 		char *hmodFName = PathFindFileNameA(hmodName);
 		memmove(hmodName, hmodFName, strlen(hmodFName) + 1);
 
-		int pointerSet = -1;
-		for (int i = 0; i < _countof(psets); i++) {
-			size_t search_len = wcslen(psets[i].search);
-			if (!IsBadReadPtr(hmodEXE + psets[i].offset, search_len+1) && !wcsncmp((wchar_t*)(hmodEXE + psets[i].offset), psets[i].search, search_len)) {
-				pointerSet = i;
+		FuncOffsets pointers = {};
+		bool isEDF4 = !lstrcmpiA(hmodName, "EDF41.exe");
+		bool isEDF5 = !lstrcmpiA(hmodName, "EDF5.exe");
+		if (isEDF4 || isEDF5) {
+			if (isEDF4) {
+				PLOG_INFO << "Running under EDF41";
+				plugFunc = "EML4_Load";
+			} else {
+				PLOG_INFO << "Running under EDF5";
+				plugFunc = "EML5_Load";
+			}
+
+			// Determine bounds of executable
+			MODULEINFO modInfo = {};
+			if (!GetModuleInformation(GetCurrentProcess(), (HMODULE)hmodEXE, &modInfo, sizeof(MODULEINFO))) {
+				PLOG_ERROR << "Failed to fetch size information for " << hmodName;
 				break;
 			}
-		}
-		FuncOffsets pointers = {};
-		if (pointerSet != -1) {
-			PLOG_INFO << "Running under " << psets[pointerSet].ident;
-			pointers = psets[pointerSet].pointers;
-			plugFunc = psets[pointerSet].plugfunc;
-		} else if (lstrcmpiA(hmodName, "EDF6.exe") == 0) {
+			size_t ScanRange = modInfo.SizeOfImage - 32; // Reduce range by 32 to workaround overrun bug in LightningScanner
+
+			HMODULE hMod;
+			if (isEDF4) {
+				hMod = GetModuleHandleW(L"MSVCR120.dll");
+			} else {
+				hMod = GetModuleHandleW(L"ucrtbase.dll");
+			}
+			if (hMod != NULL) {
+				pointers.initterm = (uintptr_t)GetProcAddress(hMod, "_initterm");
+			} else {
+				pointers.initterm = NULL;
+			}
+			if (pointers.initterm == NULL) {
+				PLOG_ERROR << "Failed to locate _initterm function";
+			}
+
+			// Find patch points via pointer scanning
+			pointers.redirect = ScanPtr("488BC455574156488BEC4881EC8000000048C745A8FEFFFFFF4889581848897020488B05????????4833C4488945F049", "CriFsIo", ScanRange);
+			pointers.wstrassign = ScanPtr("48895C24084889742410574883EC20498BF8488BF2488BD94885D27461", "std::wstring::assign", ScanRange);
+			pointers.gamelog = ScanPtr("48895424104C894424184C894C2420C348", "game debug logging", ScanRange);
+		} else if (!lstrcmpiA(hmodName, "EDF6.exe")) {
 			PLOG_INFO << "Running under EDF6";
 			plugFunc = "EML6_Load";
 
@@ -490,32 +521,14 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 
 			// Hook the DLLs secondary entrypoint for additional initialization
 			pointers.initterm = (uintptr_t)GetProcAddress((HMODULE)hmodEXE, "CPP_OnBoot");
-			if (pointers.initterm != NULL) {
-				pointers.initterm -= (uintptr_t)hmodEXE;
-			} else {
+			if (pointers.initterm == NULL) {
 				PLOG_ERROR << "Failed to locate CPP_OnBoot function";
 			}
 
 			// Find patch points via pointer scanning
-			LightningScanner::Scanner scanner("");
-
-			scanner = LightningScanner::Scanner("48895C2418488974242055574156488BEC4883EC70488B05????F7");
-			pointers.redirect = ScanPtr(scanner.Find(hmodEXE, ScanRange));
-			if (pointers.redirect == NULL) {
-				PLOG_ERROR << "Failed to locate CriFsIo function";
-			}
-
-			scanner = LightningScanner::Scanner("48895C240848896C2410488974241857415641574883EC20488B71");
-			pointers.wstrassign = ScanPtr(scanner.Find(hmodEXE, ScanRange));
-			if (pointers.wstrassign == NULL) {
-				PLOG_ERROR << "Failed to locate std::wstring::assign function";
-			}
-
-			scanner = LightningScanner::Scanner("48895424104C894424184C894C2420C3488D");
-			pointers.gamelog = ScanPtr(scanner.Find(hmodEXE, ScanRange));
-			if (pointers.gamelog == NULL) {
-				PLOG_ERROR << "Failed to locate game debug logging function";
-			}
+			pointers.redirect = ScanPtr("48895C2418488974242055574156488BEC4883EC70488B05????F7", "CriFsIo", ScanRange);
+			pointers.wstrassign = ScanPtr("48895C240848896C2410488974241857415641574883EC20488B71", "std::wstring::assign", ScanRange);
+			pointers.gamelog = ScanPtr("48895424104C894424184C894C2420C3488D", "game debug logging", ScanRange);
 		} else {
 			PLOG_ERROR << "Failed to determine what exe is running";
 			break;
@@ -535,7 +548,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 		SetupHook(pointers.initterm, (PVOID*)&initterm_orig, initterm_hook, "Additional initialization", TRUE);
 
 		// Add Mods folder redirector hook
-		wstrassign_orig = (wstrassign_func)((PBYTE)hmodEXE + pointers.wstrassign);
+		wstrassign_orig = (wstrassign_func)pointers.wstrassign;
 		if (pointers.wstrassign) {
 			SetupHook(pointers.redirect, (PVOID*)&crifsio_orig, crifsio_hook, "Mods folder redirector", Redirect);
 		} else {
@@ -543,7 +556,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 		}
 
 		// Add internal logging hook
-		SetupHook(pointers.gamelog, (PVOID*)&gamelog_orig, gamelog_hook, "Interal logging hook", GameLog);
+		SetupHook(pointers.gamelog, (PVOID*)&gamelog_orig, gamelog_hook, "Internal logging hook", GameLog);
 
 		// Finished
 		PLOG_INFO << "Basic initialization complete";
