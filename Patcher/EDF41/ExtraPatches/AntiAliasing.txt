@@ -3,7 +3,7 @@
 ; The new pixel shader is a behemoth that preserves the original shader's behavior, but in addition performs post-processing anti-aliasing as implemented in EDF 6's pixel shader at that location
 ; EDF 6's implementation has been chosen over EDF 5's because it turned out to be better optimized
 ; Since we're not loading binaries, the entire custom shader with approx. 444 instruction slots is included here
-; Personally I recommend having ingame anti-aliasing off because it actually does sample the ingame picture 8 times, just not in a way that actually anti-aliases the image
+; The anti-aliasing setting that's in the game multisamples the HUD, but does not otherwise touch the rest of what's drawn on the screen - this patch intends to supplement that
 
 aob desc 04 00 00 00 48 04 00 00 E4 05 00 00
 aob hook 89 7C 24 78 48 89 4D 80 48 89 55 88
